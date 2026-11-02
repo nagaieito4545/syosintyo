@@ -8,138 +8,69 @@ end
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 --==========================================================================
---  Rivals AC Bypass  (Android-compatible, integrated)
+--  Rivals AC Bypass  (integrated from Rivals AC Bypass.txt)
 --==========================================================================
 pcall(function()
-    -- Android executors (DeltaX, Fluxus, Arceus X等) はAPIを
-    -- getgenv() / _G / getfenv() 経由で露出するため、
-    -- K.fn() が使えるタイミングより前にここが走る。
-    -- 全executor APIは以下のヘルパーで安全に解決する。
-    local function resolveAPI(name)
-        local v
-        pcall(function() local e = getfenv and getfenv(0); if e then v = e[name] end end)
-        if type(v) ~= "function" then
-            pcall(function() local e = getfenv and getfenv(); if e then v = e[name] end end)
-        end
-        if type(v) ~= "function" then
-            pcall(function() local e = getgenv and getgenv(); if e then v = e[name] end end)
-        end
-        if type(v) ~= "function" then
-            pcall(function() v = _G[name] end)
-        end
-        return type(v) == "function" and v or nil
-    end
+    local ACBypass = {}
+    ACBypass.__index = ACBypass
 
-    -- executor APIs（存在しない環境ではnil、後でガードする）
-    local _cloneref         = resolveAPI("cloneref")
-    local _hookmetamethod   = resolveAPI("hookmetamethod")
-    local _hookfunction     = resolveAPI("hookfunction")
-    local _iscclosure       = resolveAPI("iscclosure")
-    local _newcclosure      = resolveAPI("newcclosure")
-    local _checkcaller      = resolveAPI("checkcaller")
-    local _getthreadidentity = resolveAPI("getthreadidentity") or resolveAPI("getidentity")
-    local _setthreadidentity = resolveAPI("setthreadidentity") or resolveAPI("setidentity")
-    local _getscripts       = resolveAPI("getscripts") or resolveAPI("getsenv")
-    local _getscriptbytecode = resolveAPI("getscriptbytecode")
+    local PlayersAC = cloneref(game:GetService("Players"))
+    local ReplicatedStorageAC = cloneref(game:GetService("ReplicatedStorage"))
+    local ReplicatedFirstAC = cloneref(game:GetService("ReplicatedFirst"))
+    local ScriptContextAC = cloneref(game:GetService("ScriptContext"))
+    local LocalPlayerAC = PlayersAC.LocalPlayer
 
-    -- hookmetamethod / hookfunction どちらも必須。なければバイパス不可能なので終了。
-    if not _hookmetamethod or not _hookfunction then return end
-
-    local function safeCloneref(svc)
-        if _cloneref then
-            local ok, r = pcall(_cloneref, svc)
-            if ok and r then return r end
-        end
-        return svc
-    end
-
-    local PlayersAC          = safeCloneref(game:GetService("Players"))
-    local ReplicatedStorageAC = safeCloneref(game:GetService("ReplicatedStorage"))
-    local ReplicatedFirstAC  = safeCloneref(game:GetService("ReplicatedFirst"))
-    local LocalPlayerAC      = PlayersAC.LocalPlayer
-
-    local stateAC = { bypassed = false }
-    local kExpectedScripts = {
-        [1914481512] = "Root",
-        [1936447744] = "ReplicatedController",
-        [3892767096] = "MiscellaneousController",
-        [337076960]  = "LocalScript3",
-        [2191862192] = "ClientFighter",
-    }
+    local stateAC = { bypassed = false, load_state = "Unloaded" }
+    local kExpectedScripts = { [1914481512] = "Root", [1936447744] = "ReplicatedController", [3892767096] = "MiscellaneousController", [337076960] = "LocalScript3", [2191862192] = "ClientFighter" }
 
     local function SafeHook(hookfn, ...)
-        local args = { ... }
+        local args = {...}
         local func, inst, metamethod, detour
-        if hookfn == _hookmetamethod then
-            inst, metamethod, detour = args[1], args[2], args[3]
-        else
-            func, detour = args[1], args[2]
-        end
-        -- Android: iscclosure / newcclosure が存在する場合のみ適用
-        if _iscclosure and _newcclosure then
-            if hookfn == _hookfunction and _iscclosure(func) then
-                detour = _newcclosure(detour)
-            end
-            if not _iscclosure(detour) then
-                detour = _newcclosure(detour)
-            end
-        end
+        if hookfn == hookmetamethod then inst, metamethod, detour = args[1], args[2], args[3] else func, detour = args[1], args[2] end
+        if hookfn == hookfunction and iscclosure(func) then detour = newcclosure(detour) end
+        if not iscclosure(detour) then detour = newcclosure(detour) end
         local original
         pcall(function()
-            if hookfn == _hookmetamethod then
-                original = hookfn(inst, metamethod, detour)
-            else
-                original = hookfn(func, detour)
-            end
+            if hookfn == hookmetamethod then original = hookfn(inst, metamethod, detour) else original = hookfn(func, detour) end
         end)
         return original
     end
 
     local function SafeCall(func, ...)
-        -- checkcaller が使えない環境（一部Androidエクスプロイト）では素通し
-        if _checkcaller and _checkcaller() then return func(...) end
-        if _getthreadidentity and _setthreadidentity then
-            local old = _getthreadidentity()
-            if old ~= 2 then _setthreadidentity(2) end
-            local r = { func(...) }
-            if old ~= 2 then _setthreadidentity(old) end
-            return table.unpack(r)
-        end
-        return func(...)
+        if checkcaller() then return func(...) end
+        local old = getthreadidentity()
+        if old ~= 2 then setthreadidentity(2) end
+        local r = { func(...) }
+        if old ~= 2 then setthreadidentity(old) end
+        return table.unpack(r)
     end
 
     local function VerifyScripts()
-        -- getscripts / getscriptbytecode が使えない環境はスキップしてtrue返却
-        if not _getscripts or not _getscriptbytecode then return true end
-        local ok_gs, scripts = pcall(_getscripts)
-        if not ok_gs or type(scripts) ~= "table" then return true end
+        local getscripts_fn, getbytecode_fn = pcall(function() return getscripts or getsenv end), pcall(function() return getscriptbytecode end)
+        if not getscripts_fn or not getbytecode_fn then return true end
         local found = {}
-        for _, script_instance in ipairs(scripts) do
-            local ok_bc, bytecode = pcall(_getscriptbytecode, script_instance)
-            if ok_bc and bytecode then
-                for expected_id in pairs(kExpectedScripts) do
+        for _, script_instance in ipairs(getscripts_fn()) do
+            local ok, bytecode = pcall(getbytecode_fn, script_instance)
+            if ok and bytecode then
+                for expected_id, _ in pairs(kExpectedScripts) do
                     if not found[expected_id] then
-                        local ok_src, source = pcall(debug.info, script_instance, "s")
-                        if ok_src and source and source ~= "=[C]" then
-                            found[expected_id] = true
-                        end
+                        local source_ok, source = pcall(debug.info, script_instance, "s")
+                        if source_ok and source and source ~= "=[C]" then found[expected_id] = true end
                     end
                 end
             end
         end
-        for id in pairs(kExpectedScripts) do
-            if not found[id] then return false end
-        end
+        for id, _ in pairs(kExpectedScripts) do if not found[id] then return false end end
         return true
     end
 
     local function HookKickPrevention()
-        for _, name in ipairs({ "Kick", "kick" }) do
+        for _, name in ipairs({"Kick", "kick"}) do
             local f = LocalPlayerAC[name]
             if type(f) == "function" then
                 local old
-                old = SafeHook(_hookfunction, f, function(self, ...)
-                    if self == LocalPlayerAC and not (_checkcaller and _checkcaller()) then return end
+                old = SafeHook(hookfunction, f, function(self, ...)
+                    if self == LocalPlayerAC and not checkcaller() then return end
                     return old(self, ...)
                 end)
             end
@@ -148,34 +79,21 @@ pcall(function()
 
     local function HookACScript(ac_script)
         if not ac_script then return end
-        local oldindex = SafeHook(_hookmetamethod, ac_script, "__index", function(t, k)
-            if t == ac_script and not (_checkcaller and _checkcaller()) and k == "Enabled" and not stateAC.bypassed then
-                return false
-            end
-            if _checkcaller and _checkcaller() then return oldindex(t, k) end
+        local oldindex = SafeHook(hookmetamethod, ac_script, "__index", function(t, k)
+            if t == ac_script and not checkcaller() and k == "Enabled" and not stateAC.bypassed then return false end
+            if checkcaller() then return oldindex(t, k) end
             return SafeCall(oldindex, t, k)
         end)
-        local oldnewindex = SafeHook(_hookmetamethod, ac_script, "__newindex", function(t, k, v)
-            if t == ac_script and not (_checkcaller and _checkcaller()) and k == "Enabled" and not stateAC.bypassed then
-                return
-            end
-            if _checkcaller and _checkcaller() then return oldnewindex(t, k, v) end
+        local oldnewindex = SafeHook(hookmetamethod, ac_script, "__newindex", function(t, k, v)
+            if t == ac_script and not checkcaller() and k == "Enabled" and not stateAC.bypassed then return end
+            if checkcaller() then return oldnewindex(t, k, v) end
             return SafeCall(oldnewindex, t, k, v)
         end)
     end
 
     if VerifyScripts() then
         local ac_script = ReplicatedFirstAC:WaitForChild("LocalScript3", 10)
-        local ac_event
-        local ok_rm, remotes = pcall(function()
-            return ReplicatedStorageAC:WaitForChild("Remotes", 10)
-        end)
-        if ok_rm and remotes then
-            local ok_re, re = pcall(function()
-                return remotes:WaitForChild("RemoteEvent", 10)
-            end)
-            if ok_re then ac_event = re end
-        end
+        local ac_event = ReplicatedStorageAC:WaitForChild("Remotes", 10):WaitForChild("RemoteEvent", 10)
         if ac_script and ac_event then
             HookACScript(ac_script)
             HookKickPrevention()
@@ -204,43 +122,10 @@ local rawget, rawset = rawget, rawset
 
 function K.fn(name)
     local v
-
-    -- Executor APIs can be exposed in different environments on mobile/iOS.
-    -- Resolve from the current environment first, then the executor global
-    -- environment and _G. Do not assume getfenv(0) is the executor API table.
-    pcall(function()
-        local env = getfenv(0)
-        if env then v = env[name] end
-    end)
-    if type(v) ~= "function" then
-        pcall(function()
-            local env = getfenv()
-            if env then v = env[name] end
-        end)
-    end
-    if type(v) ~= "function" then
-        pcall(function()
-            local env = getgenv and getgenv()
-            if env then v = env[name] end
-        end)
-    end
-    if type(v) ~= "function" then
-        pcall(function() v = _G[name] end)
-    end
-
+    pcall(function() v = getfenv(0)[name] end)
+    if type(v) ~= "function" then pcall(function() v = getfenv()[name] end) end
     return type(v) == "function" and v or nil
 end
-
--- File APIs are kept as locals so every storage module uses the same
--- executor-compatible implementation, including iOS builds that expose
--- the APIs through getgenv() rather than the active script environment.
-local writefile = K.fn("writefile")
-local readfile = K.fn("readfile")
-local isfile = K.fn("isfile")
-local isfolder = K.fn("isfolder")
-local makefolder = K.fn("makefolder")
-local delfile = K.fn("delfile")
-local listfiles = K.fn("listfiles")
 
 local getthreadidentity_ = K.fn("getthreadidentity") or K.fn("getidentity")
 local setthreadidentity_ = K.fn("setthreadidentity") or K.fn("setidentity")
@@ -1092,37 +977,22 @@ local function fn35()
 local v115 = tbl17.a()
 
 return function(arg, arg2)
-if type(isfile) ~= "function" or type(isfolder) ~= "function" or type(makefolder) ~= "function" then
-return v115.err("ensureFolderPath", "missing_api", "executor folder APIs are unavailable (isfile/isfolder/makefolder)")
-end
-
 local parts = arg:split("/")
 arg2 = arg2 or ""
 
-for k, v116 in ipairs(parts) do
+for k, v116 in parts, nil, nil do
 if v116 == "" then
 continue
 end
 local str7 = k == #parts and "" or "/"
 local v117 = tostring
 arg2 ..= string.format("%s%s", tostring(v116), v117(str7))
-local fileOk, fileExists = pcall(isfile, arg2)
-if not fileOk then
-return v115.err("ensureFolderPath", "isfile_failed", string.format("isfile failed for `%s`", tostring(arg2)))
-end
-if fileExists then
+if isfile(arg2) then
 return v115.err("ensureFolderPath", "collision", string.format("expected `%s` to be non-existant or a folder, found a file instead.", tostring(arg2)))
 end
 
-local folderOk, folderExists = pcall(isfolder, arg2)
-if not folderOk then
-return v115.err("ensureFolderPath", "isfolder_failed", string.format("isfolder failed for `%s`", tostring(arg2)))
-end
-if not folderExists then
-local makeOk, makeErr = pcall(makefolder, arg2)
-if not makeOk then
-return v115.err("ensureFolderPath", "makefolder_failed", string.format("makefolder failed for `%s`: %s", tostring(arg2), tostring(makeErr)))
-end
+if not isfolder(arg2) then
+makefolder(arg2)
 end
 end
 
@@ -1170,7 +1040,7 @@ return arg .. "/"
 end
 
 local function fn38(arg)
-if type(arg) ~= "string" or arg == "" then
+if arg == "" then
 return v115.err("ConfigManager", "validateConfigName", "config name cannot be empty")
 end
 
@@ -1331,26 +1201,15 @@ local v119 = fn38(arg2)
 if not v119.Ok then
 return v119
 end
-if type(writefile) ~= "function" or type(isfile) ~= "function" then
-return v115.err("ConfigManager", "SaveImpl", "executor file APIs are unavailable (writefile/isfile)")
-end
 local v120 = arg:_ConfigPath(arg2)
-local exists = false
-local existsOk = pcall(function() exists = isfile(v120) == true end)
-if not existsOk then
-return v115.err("ConfigManager", "SaveImpl", string.format("isfile failed for `%s`", tostring(v120)))
-end
-if arg4 and exists then
+if arg4 and isfile(v120) then
 return v115.err("ConfigManager", "SaveImpl", string.format("path `%s` already exists", tostring(v120)))
 end
 local v121 = arg:ToJson(arg3)
 if not v121.Ok then
 return v115.err("ConfigManager", "SaveImpl", v121.Error.Detail)
 end
-local ok, err = pcall(writefile, v120, v121.Value)
-if not ok then
-return v115.err("ConfigManager", "SaveImpl", string.format("writefile failed for `%s`: %s", tostring(v120), tostring(err)))
-end
+writefile(v120, v121.Value)
 return v115.VoidOk
 end
 
@@ -1361,33 +1220,21 @@ end
 index2.LoadFromFile = function(arg, arg2)
 local v119 = fn38(arg2)
 if not v119.Ok then
-return v115.err("ConfigManager", "LoadFromFile", v119.Error.Detail)
-end
-if type(readfile) ~= "function" or type(isfile) ~= "function" then
-return v115.err("ConfigManager", "LoadFromFile", "executor file APIs are unavailable (readfile/isfile)")
+return v115.err("ConfigManager", v86[76], v119.Error.Detail)
 end
 local v120 = arg:_ConfigPath(arg2)
-local exists = false
-local existsOk = pcall(function() exists = isfile(v120) == true end)
-if not existsOk then
-return v115.err("ConfigManager", "LoadFromFile", string.format("isfile failed for `%s`", tostring(v120)))
+if not isfile(v120) then
+return v115.err(v86[35], "LoadFromFile", string.format("path `%s` does not exist", tostring(v120)))
 end
-if not exists then
-return v115.err("ConfigManager", "LoadFromFile", string.format("path `%s` does not exist", tostring(v120)))
-end
-local ok, v121 = pcall(readfile, v120)
-if not ok then
-return v115.err("ConfigManager", "LoadFromFile", string.format("readfile failed for `%s`: %s", tostring(v120), tostring(v121)))
-end
+local v121 = readfile(v120)
 return arg:FromJson(v121)
 end
 
 index2.Exists = function(arg, arg2)
-if not fn38(arg2).Ok or type(isfile) ~= "function" then
-return false
+if not fn38(arg2).Ok then
+return v86[153]
 end
-local ok, result = pcall(isfile, arg:_ConfigPath(arg2))
-return ok and result == true
+return isfile(arg:_ConfigPath(arg2))
 end
 
 index2.SaveDefaultToFile = function(arg, arg2, arg3)
@@ -1399,49 +1246,30 @@ local v119 = fn38(arg2)
 if not v119.Ok then
 return v119
 end
-if type(delfile) ~= "function" or type(isfile) ~= "function" then
-return v115.err("ConfigManager", "DeleteFile", "executor file APIs are unavailable (delfile/isfile)")
-end
 local v120 = arg:_ConfigPath(arg2)
-local existsOk, exists = pcall(isfile, v120)
-if not existsOk then
-return v115.err("ConfigManager", "DeleteFile", string.format("isfile failed for `%s`", tostring(v120)))
+if not isfile(v120) then
+return v115.err("ConfigManager", v86[38], string.format("path `%s` does not exist", tostring(v120)))
 end
-if not exists then
-return v115.err("ConfigManager", "DeleteFile", string.format("path `%s` does not exist", tostring(v120)))
-end
-local ok, err = pcall(delfile, v120)
-if not ok then
-return v115.err("ConfigManager", "DeleteFile", string.format("delfile failed for `%s`: %s", tostring(v120), tostring(err)))
-end
+delfile(v120)
 return v115.VoidOk
 end
 
 index2.AllConfigs = function(arg)
 local tbl18 = {}
-if arg._savePath == "" or type(listfiles) ~= "function" then
+if arg._savePath == "" then
 return tbl18
 end
 
-local ok, files = pcall(listfiles, arg._savePath)
-if not ok or type(files) ~= "table" then
-return tbl18
-end
+for _, v119 in listfiles(arg._savePath) do
+if isfile(v119) then
+local match = (v119:match("[/\\]([^/\\]+)$") or v119):match("(.+)%.json$")
 
-for _, v119 in ipairs(files) do
-local isOk, isFile = type(isfile) == "function" and pcall(isfile, v119) or false, false
-if type(isfile) == "function" then
-    isOk, isFile = pcall(isfile, v119)
-end
-if isOk and isFile then
-local match = (tostring(v119):match("[/\\]([^/\\]+)$") or tostring(v119)):match("(.+)%.json$")
 if match ~= nil then
 table.insert(tbl18, match)
 end
 end
 end
 
-table.sort(tbl18)
 return tbl18
 end
 
@@ -21803,7 +21631,7 @@ tbl17.bb()
 local v118 = tbl17.bc()
 
 return (v117:Add(v115.new({
-DefaultConfig = tbl17.bc().deserialize(HttpService:JSONDecode([==[{"Version":17,"Data":{"Skybox":{"Enabled":false,"Preset":""},"AutoRespawn":{"Enabled":false},"CustomCrosshair":{"Outline":{"Color":{"B":0,"__type":"Color3","G":0,"R":0},"Enabled":false,"Thickness":1},"Right":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"FollowTarget":{"Enabled":false,"Damper":1,"Speed":20,"Mode":"Crosshair","SnapDistance":5},"Animation":{"Enabled":false,"Perimeter":{"Color":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":1,"G":0,"Time":1,"R":0}],"__type":"ColorSequence"}},"Shimmer":{"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Speed":1,"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":1,"R":1},"BackgroundColor":{"B":0,"__type":"Color3","G":0,"R":0},"Rotation":0}},"Enabled":false,"Text":{"Enabled":false,"Font":"Inconsolata","Outline":{"Color":{"B":0,"__type":"Color3","G":0,"R":0},"Enabled":false,"Thickness":1},"Animation":{"Enabled":false,"Perimeter":{"Color":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":1,"G":0,"Time":1,"R":0}],"__type":"ColorSequence"}},"Shimmer":{"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Speed":1,"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":1,"R":1},"BackgroundColor":{"B":0,"__type":"Color3","G":0,"R":0},"Rotation":0}},"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Offset":24,"Content":"","Size":14},"Gap":6,"Bottom":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Rotation":{"Enabled":false,"Angle":0,"Speed":90},"Image":{"Transparency":0,"Name":"","Size":32},"Style":"Lines","Top":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Thickness":2,"Length":12,"Spread":{"Enabled":false,"Range":{"Min":4,"Max":16},"Speed":3},"Left":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}}},"PlayerElimination":{"Enabled":false,"Notification":{"Enabled":false,"Text":"Eliminated %DNAME% (%NAME%)"},"KillFlash":{"Enabled":false,"Duration":1.35,"Color":{"B":1,"__type":"Color3","G":0.6666666865348816,"R":0.3529411852359772}},"Sound":{"Enabled":false,"Pitch":1,"Volume":1},"Chams":{"Enabled":false,"Transparency":0,"Color":{"B":0,"__type":"Color3","G":0,"R":1},"Duration":0.8,"Material":"Ghost"}},"Weather":{"Enabled":false,"Wind":{"Strength":0,"Angle":0},"Intensity":1,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Preset":"Snow","Rate":1,"Lightning":{"Enabled":false,"Sparks":{"Enabled":true,"Count":18,"Jaggedness":4,"Color":{"Keypoints":[{"B":1,"G":0.9647058844566345,"Time":0,"R":0.9333333373069763},{"B":1,"G":0.9647058844566345,"Time":1,"R":0.9333333373069763}],"__type":"ColorSequence"},"Distance":22,"Speed":22,"Thickness":2.2},"Color":{"Keypoints":[{"B":1,"G":0.9019607901573181,"Time":0,"R":0.8392156958580017},{"B":1,"G":0.9019607901573181,"Time":1,"R":0.8392156958580017}],"__type":"ColorSequence"},"Distance":80,"Explosion":{"Color":{"Keypoints":[{"B":1,"G":0.7843137383460999,"Time":0,"R":0.5882353186607361},{"B":1,"G":0.7843137383460999,"Time":1,"R":0.5882353186607361}],"__type":"ColorSequence"},"Bolts":14,"Enabled":true,"Size":0.45},"Flash":8,"Thickness":4,"Jaggedness":7,"Interval":2,"Branches":12,"Sound":{"Enabled":true,"SoundId":"","Delay":true,"Volume":1},"Height":220},"Glow":0.6,"Height":45,"Speed":1,"Spread":25,"Size":1},"Theme":{"Outline":{"B":0.0941176488995552,"__type":"Color3","G":0.09803921729326248,"R":0.0941176488995552},"ToggleCircleUnselected":{"B":0.34117648005485535,"__type":"Color3","G":0.3333333432674408,"R":0.27450981736183167},"TabButtonSelected":{"B":0.27450981736183167,"__type":"Color3","G":0.2549019753932953,"R":0.20000000298023224},"ToggleBackgroundUnselected":{"B":0.05098039284348488,"__type":"Color3","G":0.05098039284348488,"R":0.0470588244497776},"TextColor":{"B":0.772549033164978,"__type":"Color3","G":0.772549033164978,"R":0.772549033164978},"Unselected":{"B":0.2823529541492462,"__type":"Color3","G":0.2823529541492462,"R":0.29411765933036804},"Background":{"B":0,"__type":"Color3","G":0,"R":0},"ElementBackground":{"B":0.0235294122248888,"__type":"Color3","G":0.0235294122248888,"R":0.0235294122248888},"Accent":{"B":0.8705882430076599,"__type":"Color3","G":0.8352941274642944,"R":0.6039215922355652}},"ColorGrading":{"Enabled":false,"TonemapperPreset":"Default"},"UserServer":{"ShowActive":false,"ShareSkins":false},"StretchedResolution":{"Enabled":false,"X":13,"Y":10},"SilentAim":{"Enabled":false,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"ReactionTime":0,"HitboxPoint":{"Surface":{"SizeReductionPercentage":50,"PreserveDepth":false},"Type":"Center"},"HitboxSelection":{"Random":{"Head":50},"Type":"ClosestToCrosshair"},"Fov":{"Circle":{"Visible":false,"Animated":{"Enabled":false,"Speed":90},"Stroke":{"Thickness":1,"Gradient":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":0,"G":0,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0},"FollowTarget":{"Enabled":false,"SnapDistance":5,"Speed":20,"Damper":1},"Fill":{"Enabled":false,"Gradient":{"Keypoints":[{"B":0.9333333373069763,"G":0.9607843160629272,"Time":0,"R":1},{"B":0.7058823704719543,"G":0.7843137383460999,"Time":0.5,"R":1},{"B":0.4117647111415863,"G":0.5490196347236633,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0.15}},"Radius":150},"SwitchDelay":0,"ActivationChance":100,"Manipulate":{"Enabled":false,"Mode":"OnBestTarget","ShowIndicator":true},"TargetConditions":{"Visible":true,"NotDeflecting":true,"NotShielded":true,"Vulnerable":true,"WithinFov":true}},"Removables":{"NoHitmarker":false,"NoBurnEffect":false,"NoGunTracers":false,"NoFlashbang":false,"NoScopeReticle":false,"NoMuzzleFlash":false,"NoScopeOverlay":false,"NoAdsVignette":false},"Ambience":{"Enabled":false,"CustomSound":"","Sound":"","Volume":1},"DepthOfField":{"Enabled":false,"FarIntensity":0.75,"FocusDistance":0.05,"InFocusRadius":10,"NearIntensity":0.75},"ColorAnimations":{"Entries":[]},"Movement":{"Sliding":{"Enabled":false,"Speed":10,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"LongJump":{"Enabled":false,"Keybind":{"State":false,"Invisible":false,"Kind":"Tap","ShowInList":true},"Behind":8,"Mode":"Under Feet","UpwardVelocity":20,"Force":60},"JumpPower":{"Enabled":false,"Speed":2,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":false}},"MovementRecorder":{"AlignSnapDistance":0.2,"Replay":{"Keybind":{"State":false,"Invisible":false,"Kind":"Toggle","ShowInList":true}},"HideNotifications":false,"Record":{"Keybind":{"State":false,"Invisible":false,"Kind":"Toggle","ShowInList":true}},"LookAlignSpeed":180,"HideUI":false,"LookSmoothing":35,"OpenDistance":3,"RenderDistance":50,"Enabled":false},"Flight":{"Enabled":false,"Speed":100,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"Noclip":{"Enabled":false,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"WalkSpeed":{"Enabled":false,"Speed":2,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"AutoStrafe":{"Enabled":false,"Speed":50,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}}},"PlayerHit":{"Enabled":false,"Notification":{"Enabled":false,"Text":"Hit %DNAME% (%NAME%) for %DMG% in %PART%"},"HitFlash":{"Enabled":false,"Duration":1.35,"Color":{"B":1,"__type":"Color3","G":0.6666666865348816,"R":0.3529411852359772}},"Sound":{"Enabled":false,"BodyVolume":1,"HeadPitch":1,"DisableGameSound":false,"BodyPitch":1,"HeadVolume":1},"Chams":{"Enabled":false,"Transparency":0,"Color":{"B":0,"__type":"Color3","G":0,"R":1},"Duration":0.8,"Material":"Ghost"}},"Bloom":{"Enabled":false,"Threshold":0.95,"Intensity":0.4,"Size":24},"PerProfile":{"Overrides":[]},"AntiKatana":{"Enabled":true},"Notifications":{"Enabled":true,"Font":"Inconsolata","Side":"TopLeft","Offset":0,"Size":15},"AutoQueue":{"Enabled":false,"Queue":"1v1"},"AutoVote":{"Enabled":false,"Maps":[]},"HackerDetector":{"Enabled":false,"Color":{"B":0.27450981736183167,"__type":"Color3","G":0.6666666865348816,"R":0.9803921580314636},"Notify":false},"CameraFov":{"Enabled":false,"Value":70},"Triggerbot":{"Enabled":false,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"TargetConditions":{"NotDeflecting":true,"NotShielded":true,"Vulnerable":true},"ReactionTime":0,"ReleaseTime":0},"AutoExecuteScript":{"Enabled":false},"ModDetector":{"Moderators":[],"Enabled":false,"ModFriends":[],"Color":{"B":0.27450981736183167,"__type":"Color3","G":0.6666666865348816,"R":0.9803921580314636}},"BulletTracers":{"Enabled":false,"Glow":1,"ExpandSpeed":18,"Color":{"B":1,"__type":"Color3","G":0.8627451062202454,"R":0.47058823704719543},"FadeTime":0.35,"Expand":true,"Width":0.06,"Style":"Beam","Lifetime":0.6,"Emission":1,"ExpandDamper":0.7,"TextureSpeed":1,"TextureLength":4},"SunRays":{"Enabled":false,"Intensity":0.25,"Spread":1},"AnimationPlayer":{"Enabled":false,"Animation":"Cat Girl Bounce","Speed":1,"CustomId":"","End":100,"Start":0},"ColorCorrection":{"Enabled":false,"Saturation":0,"Contrast":0,"TintColor":{"B":1,"__type":"Color3","G":1,"R":1},"Brightness":0},"AutoBan":{"Enabled":false,"FirstWeapons":[],"SecondWeapons":[]},"MotionBlur":{"Enabled":false,"Intensity":10,"Sensitivity":1},"ThirdPerson":{"Enabled":false,"X":3,"ShowReplica":false,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"Z":6,"Y":2,"RayCheck":false},"Esp":{"Team":{"AmmoBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Skeleton":{"Enabled":false,"Transparency":0,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1},"BoxImage":{"Enabled":false,"Transparency":0,"Name":""},"HealthNumber":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1}},"Tracer":{"Enabled":false,"OutlineTransparency":0,"Origin":"Bottom","Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1,"Transparency":0,"OutlineThickness":1,"Target":"Feet","Outline":false,"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0}},"Chams":{"GlowColor":{"B":0,"__type":"Color3","G":0,"R":1},"InnerColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineTransparency":0.6,"Enabled":false,"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0.3921568691730499},"Kind":"Legacy","Glow":false,"InnerTransparency":0},"Enabled":false,"HealthBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"HeldWeapon":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Distance":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"FilledBox":{"Enabled":false,"Transparency":0.8,"Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Name":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Deflecting":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Box":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Style":"Full","Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Winstreak":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"HeadMarker":{"Outline":false,"Transparency":0,"Filled":true,"Enabled":false,"Color":{"B":0.3137255012989044,"__type":"Color3","G":0.3137255012989044,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Shape":"Cross","OutlineTransparency":0},"Rank":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}}},"Settings":{"FontSize":16,"FlagFont":"Inconsolata","UseDisplayName":false,"DistanceScalingRef":50,"FlagTextSurround":"None","TextSurround":"None","FlagFontSize":12,"DistanceScaling":false,"Spacing":{"Top":1,"Right":1,"Left":1,"Bottom":1},"FlagTextCase":"UPPERCASE","OverrideRectSize":{"Enabled":false,"Height":1,"Width":1},"TextCase":"Standard","Font":"Inconsolata"},"Main":{"Enabled":false,"Mode":"Static","Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"Enemy":{"AmmoBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Skeleton":{"Enabled":false,"Transparency":0,"Thickness":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"BoxImage":{"Enabled":false,"Transparency":0,"Name":""},"HealthNumber":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1}},"Tracer":{"Enabled":false,"OutlineTransparency":0,"Origin":"Bottom","Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1,"Transparency":0,"OutlineThickness":1,"Target":"Feet","OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Outline":false},"Chams":{"Enabled":false,"InnerColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineTransparency":0.6,"GlowColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0.3921568691730499},"Kind":"Legacy","Glow":false,"InnerTransparency":0},"Enabled":false,"HeadMarker":{"Outline":false,"Transparency":0,"OutlineTransparency":0,"Filled":true,"Color":{"B":0.3137255012989044,"__type":"Color3","G":0.3137255012989044,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Shape":"Cross","Enabled":false},"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"HeldWeapon":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Distance":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"FilledBox":{"Enabled":false,"Transparency":0.8,"Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Name":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Deflecting":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"HealthBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Winstreak":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Box":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Style":"Full","Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Rank":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}}}},"Chams":{"Arms":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":true},"Character":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":false},"Item":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":false}},"DeviceSpoof":{"Enabled":false,"SpoofType":"VR"},"PlayerSpoofer":{"OtherPlayers":{"Influencer":{"Enabled":false},"LeaderboardRank":{"Enabled":false,"Value":200},"CasualWinPercent":{"Enabled":false,"Value":0},"Avatar":{"Enabled":false,"Value":""},"RankedWinPercent":{"Enabled":false,"Value":0},"NosniyTeam":{"Enabled":false},"FavoriteMap":{"Enabled":false,"Value":""},"DisplayName":{"Enabled":false,"Value":""},"CasualWins":{"Enabled":false,"Value":0},"RankedWins":{"Enabled":false,"Value":0},"Winstreak":{"Enabled":false,"Value":0},"NametagStatus":{"Enabled":false,"Value":"Prime"},"Name":{"Enabled":false,"Value":""},"Level":{"Enabled":false,"Value":0},"RankedElo":{"Enabled":false,"Value":0},"RobloxEmployee":{"Enabled":false}},"LocalPlayer":{"LeaderboardRank":{"Enabled":false,"Value":1},"Avatar":{"Enabled":false,"Value":"20349956"},"EventCurrency":{"Enabled":false,"Value":9999},"CasualWins":{"Enabled":false,"Value":99999},"RankedWins":{"Enabled":false,"Value":9999},"Keys":{"Enabled":false,"Value":999},"Level":{"Enabled":false,"Value":999},"RankedElo":{"Enabled":false,"Value":3600},"Ping":{"Enabled":false,"Value":"Low"},"Influencer":{"Enabled":false,"Value":true},"DisplayName":{"Enabled":false,"Value":"Nosniy"},"RobloxEmployee":{"Enabled":false,"Value":true},"NosniyTeam":{"Enabled":false},"Winstreak":{"Enabled":false,"Value":999},"NametagStatus":{"Enabled":false,"Value":"Prime"},"FavoriteMap":{"Enabled":false,"Value":"Arena"},"RankedWinPercent":{"Enabled":false,"Value":100},"CasualWinPercent":{"Enabled":false,"Value":100},"Name":{"Enabled":false,"Value":"Nosniy"}}},"ViewModelHighlight":{"Arms":{"FillColor":{"B":1,"__type":"Color3","G":1,"R":1},"OutlineTransparency":0,"OutlineColor":{"B":1,"__type":"Color3","G":1,"R":1},"AlwaysOnTop":false,"FillTransparency":0.5,"Enabled":false},"Item":{"FillColor":{"B":1,"__type":"Color3","G":1,"R":1},"OutlineTransparency":0,"OutlineColor":{"B":1,"__type":"Color3","G":1,"R":1},"AlwaysOnTop":false,"FillTransparency":0.5,"Enabled":false}},"ViewModelWireframe":{"Arms":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Width":0.0025},"Item":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Width":0.0025}},"SubspaceTripmines":{"TeamTrigger":false,"AutoTrigger":false},"UnlockAll":{"Cosmetics":[],"Enabled":false,"Rarities":[]},"AutoPickupDrops":{"Enabled":false,"Types":[]},"Aimbot":{"Enabled":false,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true},"ReactionTime":0,"HitboxPoint":{"Surface":{"SizeReductionPercentage":50,"PreserveDepth":false},"Type":"Center"},"HitboxSelection":{"Random":{"Head":50},"Type":"ClosestToCrosshair"},"Fov":{"Circle":{"Visible":false,"Animated":{"Enabled":false,"Speed":90},"Stroke":{"Thickness":1,"Gradient":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":0,"G":0,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0},"FollowTarget":{"Enabled":false,"SnapDistance":5,"Speed":20,"Damper":1},"Fill":{"Enabled":false,"Gradient":{"Keypoints":[{"B":0.9333333373069763,"G":0.9607843160629272,"Time":0,"R":1},{"B":0.7058823704719543,"G":0.7843137383460999,"Time":0.5,"R":1},{"B":0.4117647111415863,"G":0.5490196347236633,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0.15}},"Radius":150},"SwitchDelay":0,"Mode":{"Speed":0.1,"Type":"Linear"},"TargetConditions":{"Visible":true,"NotDeflecting":true,"NotShielded":true,"Vulnerable":true,"WithinFov":true},"TargetLock":{"Enabled":false,"BindInvisible":false,"Bind":{"__type":"EnumItem","EnumType":"KeyCode","Name":"Y"},"Mode":"ToggleLock","BindShowInList":true}},"Flickbot":{"Enabled":false,"ShotDelay":0,"Curvature":12,"Keybind":{"State":false,"Invisible":false,"Kind":"Hold","ShowInList":true},"FlickDuration":110,"Humanness":30,"Cooldown":250,"Shoot":false},"ViewModelOffset":{"Enabled":false,"X":0,"Roll":0,"Z":0,"Yaw":0,"Pitch":0,"Y":0},"SoundVisualizer":{"Enabled":false,"Source":"All","MinVolume":0,"Other":{"Color":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Mode":"Origin","UseLoudnessColor":true},"Footsteps":{"Color":{"B":0.3921568691730499,"__type":"Color3","G":1,"R":0},"Mode":"Circle","UseLoudnessColor":true},"Types":{"Footsteps":true,"Other":true}},"ItemModifiers":{"NoMotion":false,"ExtendMeleeRange":{"Enabled":false,"Range":10},"FireCooldown":{"Enabled":false,"Percentage":25},"MeleeCooldown":{"Enabled":false,"Percentage":25},"DashCooldown":{"Enabled":false,"Percentage":25},"AutomaticWeapon":false,"NoSprintAnimation":false,"NoShootAnimation":false,"NoSpread":false,"NoCameraSway":false,"AlwaysBackstab":false,"GrenadeFuse":{"Enabled":false,"RemoveFuse":false,"ExplodeOn":"Impact"},"NoEquipAnimation":false,"AimSpeed":{"Enabled":false,"Percentage":300},"AimCooldown":{"Enabled":false,"Percentage":50},"NoReloadAnimation":false,"NoCameraShake":false,"InfiniteDoubleJumps":false,"Recoil":{"Enabled":false,"Percentage":75}},"Atmosphere":{"Enabled":false,"Haze":0,"Decay":{"B":0.05490000173449516,"__type":"Color3","G":0.2353000044822693,"R":0.36079999804496765},"Color":{"B":0.4235000014305115,"__type":"Color3","G":0.666700005531311,"R":0.7843000292778015},"Glare":0,"Density":0.395,"Offset":0},"Ragebot":{"UtilizeHealthLead":false,"Evasion":{"Translocate":{"Offset":-5},"Mode":"Random","Random":{"RadiusRandomFactor":0.5,"BaseRadius":100,"AnchorFromCharacter":false},"ProjectileBreaker":{"FallbackRadiusRandomFactor":0.5,"DepthForward":{"Min":0,"Max":4},"RepositionInterval":0.3,"DepthUp":{"Min":0,"Max":5.5},"DepthForwardFrequency":5,"FallbackBaseRadius":100,"DepthUpFrequency":5,"FallbackAnchorFromCharacter":false}},"Enabled":false,"ShootFrames":1,"PrioritizeHackers":false,"Weapons":{"Enabled":{"Primary":true,"Melee":true,"Secondary":true},"Priority":["Primary","Secondary","Melee"],"OnEmpty":"SwapOrReload"},"Stability":0.15,"Keybind":{"State":false,"Invisible":false,"Kind":"Always","ShowInList":true}},"Lighting":{"Enabled":false,"DisableGlobalShadows":false,"ClockTime":{"Enabled":false,"Value":12},"LightingStyle":{"Enabled":false,"Value":"Realistic"},"ColorShift":{"Enabled":false,"Top":{"B":1,"__type":"Color3","G":0.6274510025978088,"R":0.3921568691730499},"Bottom":{"B":0.3529411852359772,"__type":"Color3","G":0.1568627506494522,"R":0.0784313753247261}},"EnvironmentDiffuseScale":{"Enabled":false,"Value":0},"EnvironmentSpecularScale":{"Enabled":false,"Value":0},"ExposureCompensation":{"Enabled":false,"Value":0},"GeographicLatitude":{"Enabled":false,"Value":41.733},"Ambient":{"Enabled":false,"Outdoor":{"B":0.5450980067253113,"__type":"Color3","G":0.4000000059604645,"R":0.00392200006172061},"Indoor":{"B":1,"__type":"Color3","G":0.7960780262947083,"R":0.23137299716472626}},"Fog":{"Enabled":false,"Color":{"B":0.7529411911964417,"__type":"Color3","G":0.7529411911964417,"R":0.7529411911964417},"Start":0,"End":100000},"ShadowColor":{"Enabled":false,"Value":{"B":0.7200000286102295,"__type":"Color3","G":0.699999988079071,"R":0.699999988079071}},"Brightness":{"Enabled":false,"Value":2},"ShadowSoftness":{"Enabled":false,"Value":0.5},"PrioritizeLightingQuality":false},"AutoLoadout":{"Enabled":false,"PerMap":false,"MultipleLoadouts":false,"Loadouts":[]}}}]==]).Data),
+DefaultConfig = tbl17.bc().deserialize(game:GetService("HttpService"):JSONDecode([=[{"Skybox":{"Enabled":false,"Preset":""},"AutoRespawn":{"Enabled":false},"CustomCrosshair":{"Outline":{"Color":{"B":0,"__type":"Color3","G":0,"R":0},"Enabled":false,"Thickness":1},"Right":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"FollowTarget":{"Enabled":false,"Damper":1,"Speed":20,"Mode":"Crosshair","SnapDistance":5},"Animation":{"Enabled":false,"Perimeter":{"Color":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":1,"G":0,"Time":1,"R":0}],"__type":"ColorSequence"}},"Shimmer":{"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Speed":1,"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":1,"R":1},"BackgroundColor":{"B":0,"__type":"Color3","G":0,"R":0},"Rotation":0}},"Enabled":false,"Text":{"Enabled":false,"Font":"Inconsolata","Outline":{"Color":{"B":0,"__type":"Color3","G":0,"R":0},"Enabled":false,"Thickness":1},"Animation":{"Enabled":false,"Perimeter":{"Color":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":1,"G":0,"Time":1,"R":0}],"__type":"ColorSequence"}},"Shimmer":{"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Speed":1,"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":1,"R":1},"BackgroundColor":{"B":0,"__type":"Color3","G":0,"R":0},"Rotation":0}},"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Offset":24,"Content":"","Size":14},"Gap":6,"Bottom":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Rotation":{"Enabled":false,"Angle":0,"Speed":90},"Image":{"Transparency":0,"Name":"","Size":32},"Style":"Lines","Top":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Thickness":2,"Length":12,"Spread":{"Enabled":false,"Range":{"Min":4,"Max":16},"Speed":3},"Left":{"Enabled":true,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}}},"PlayerElimination":{"Enabled":false,"Notification":{"Enabled":false,"Text":"Eliminated %DNAME% (%NAME%)"},"KillFlash":{"Enabled":false,"Duration":1.35,"Color":{"B":1,"__type":"Color3","G":0.6666666865348816,"R":0.3529411852359772}},"Sound":{"Enabled":false,"Pitch":1,"Volume":1},"Chams":{"Enabled":false,"Transparency":0,"Color":{"B":0,"__type":"Color3","G":0,"R":1},"Duration":0.8,"Material":"Ghost"}},"Weather":{"Enabled":false,"Wind":{"Strength":0,"Angle":0},"Intensity":1,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Preset":"Snow","Rate":1,"Lightning":{"Enabled":false,"Sparks":{"Enabled":true,"Count":18,"Jaggedness":4,"Color":{"Keypoints":[{"B":1,"G":0.9647058844566345,"Time":0,"R":0.9333333373069763},{"B":1,"G":0.9647058844566345,"Time":1,"R":0.9333333373069763}],"__type":"ColorSequence"},"Distance":22,"Speed":22,"Thickness":2.2},"Color":{"Keypoints":[{"B":1,"G":0.9019607901573181,"Time":0,"R":0.8392156958580017},{"B":1,"G":0.9019607901573181,"Time":1,"R":0.8392156958580017}],"__type":"ColorSequence"},"Distance":80,"Explosion":{"Color":{"Keypoints":[{"B":1,"G":0.7843137383460999,"Time":0,"R":0.5882353186607361},{"B":1,"G":0.7843137383460999,"Time":1,"R":0.5882353186607361}],"__type":"ColorSequence"},"Bolts":14,"Enabled":true,"Size":0.45},"Flash":8,"Thickness":4,"Jaggedness":7,"Interval":2,"Branches":12,"Sound":{"Enabled":true,"SoundId":"","Delay":true,"Volume":1},"Height":220},"Glow":0.6,"Height":45,"Speed":1,"Spread":25,"Size":1},"Theme":{"Outline":{"B":0.0941176488995552,"__type":"Color3","G":0.09803921729326248,"R":0.0941176488995552},"ToggleCircleUnselected":{"B":0.34117648005485535,"__type":"Color3","G":0.3333333432674408,"R":0.27450981736183167},"TabButtonSelected":{"B":0.27450981736183167,"__type":"Color3","G":0.2549019753932953,"R":0.20000000298023224},"ToggleBackgroundUnselected":{"B":0.05098039284348488,"__type":"Color3","G":0.05098039284348488,"R":0.0470588244497776},"TextColor":{"B":0.772549033164978,"__type":"Color3","G":0.772549033164978,"R":0.772549033164978},"Unselected":{"B":0.2823529541492462,"__type":"Color3","G":0.2823529541492462,"R":0.29411765933036804},"Background":{"B":0,"__type":"Color3","G":0,"R":0},"ElementBackground":{"B":0.0235294122248888,"__type":"Color3","G":0.0235294122248888,"R":0.0235294122248888},"Accent":{"B":0.8705882430076599,"__type":"Color3","G":0.8352941274642944,"R":0.6039215922355652}},"ColorGrading":{"Enabled":false,"TonemapperPreset":"Default"},"UserServer":{"ShowActive":false,"ShareSkins":false},"StretchedResolution":{"Enabled":false,"X":13,"Y":10},"SilentAim":{"Enabled":true,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"ReactionTime":0,"HitboxPoint":{"Surface":{"SizeReductionPercentage":50,"PreserveDepth":false},"Type":"Center"},"HitboxSelection":{"Random":{"Head":50},"Type":"ClosestToCrosshair"},"Fov":{"Circle":{"Visible":false,"Animated":{"Enabled":false,"Speed":90},"Stroke":{"Thickness":1,"Gradient":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":0,"G":0,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0},"FollowTarget":{"Enabled":false,"SnapDistance":5,"Speed":20,"Damper":1},"Fill":{"Enabled":false,"Gradient":{"Keypoints":[{"B":0.9333333373069763,"G":0.9607843160629272,"Time":0,"R":1},{"B":0.7058823704719543,"G":0.7843137383460999,"Time":0.5,"R":1},{"B":0.4117647111415863,"G":0.5490196347236633,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0.15}},"Radius":150},"SwitchDelay":0,"ActivationChance":100,"Manipulate":{"Enabled":true,"Mode":"OnBestTarget","ShowIndicator":true},"TargetConditions":{"Visible":true,"NotDeflecting":true,"NotShielded":true,"Vulnerable":true,"WithinFov":true}},"Removables":{"NoHitmarker":false,"NoBurnEffect":false,"NoGunTracers":false,"NoFlashbang":false,"NoScopeReticle":false,"NoMuzzleFlash":false,"NoScopeOverlay":false,"NoAdsVignette":false},"Ambience":{"Enabled":false,"CustomSound":"","Sound":"","Volume":1},"DepthOfField":{"Enabled":false,"FarIntensity":0.75,"FocusDistance":0.05,"InFocusRadius":10,"NearIntensity":0.75},"ColorAnimations":{"Entries":[]},"Movement":{"Sliding":{"Enabled":false,"Speed":10,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"LongJump":{"Enabled":false,"Keybind":{"State":false,"Invisible":false,"Kind":"Tap","ShowInList":true},"Behind":8,"Mode":"Under Feet","UpwardVelocity":20,"Force":60},"JumpPower":{"Enabled":false,"Speed":2,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":false}},"MovementRecorder":{"AlignSnapDistance":0.2,"Replay":{"Keybind":{"State":false,"Invisible":false,"Kind":"Toggle","ShowInList":true}},"HideNotifications":false,"Record":{"Keybind":{"State":false,"Invisible":false,"Kind":"Toggle","ShowInList":true}},"LookAlignSpeed":180,"HideUI":false,"LookSmoothing":35,"OpenDistance":3,"RenderDistance":50,"Enabled":false},"Flight":{"Enabled":false,"Speed":100,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"Noclip":{"Enabled":false,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"WalkSpeed":{"Enabled":false,"Speed":2,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"AutoStrafe":{"Enabled":false,"Speed":50,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}}},"PlayerHit":{"Enabled":false,"Notification":{"Enabled":false,"Text":"Hit %DNAME% (%NAME%) for %DMG% in %PART%"},"HitFlash":{"Enabled":false,"Duration":1.35,"Color":{"B":1,"__type":"Color3","G":0.6666666865348816,"R":0.3529411852359772}},"Sound":{"Enabled":false,"BodyVolume":1,"HeadPitch":1,"DisableGameSound":false,"BodyPitch":1,"HeadVolume":1},"Chams":{"Enabled":false,"Transparency":0,"Color":{"B":0,"__type":"Color3","G":0,"R":1},"Duration":0.8,"Material":"Ghost"}},"Bloom":{"Enabled":false,"Threshold":0.95,"Intensity":0.4,"Size":24},"PerProfile":{"Overrides":[]},"AntiKatana":{"Enabled":true},"Notifications":{"Enabled":true,"Font":"Inconsolata","Side":"TopLeft","Offset":0,"Size":15},"AutoQueue":{"Enabled":false,"Queue":"1v1"},"AutoVote":{"Enabled":false,"Maps":[]},"HackerDetector":{"Enabled":true,"Color":{"B":0.27450981736183167,"__type":"Color3","G":0.6666666865348816,"R":0.9803921580314636},"Notify":true},"CameraFov":{"Enabled":false,"Value":70},"Triggerbot":{"Enabled":false,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"TargetConditions":{"NotDeflecting":true,"NotShielded":true,"Vulnerable":true},"ReactionTime":0,"ReleaseTime":0},"AutoExecuteScript":{"Enabled":false},"ModDetector":{"Moderators":[],"Enabled":false,"ModFriends":[],"Color":{"B":0.27450981736183167,"__type":"Color3","G":0.6666666865348816,"R":0.9803921580314636}},"BulletTracers":{"Enabled":false,"Glow":1,"ExpandSpeed":18,"Color":{"B":1,"__type":"Color3","G":0.8627451062202454,"R":0.47058823704719543},"FadeTime":0.35,"Expand":true,"Width":0.06,"Style":"Beam","Lifetime":0.6,"Emission":1,"ExpandDamper":0.7,"TextureSpeed":1,"TextureLength":4},"SunRays":{"Enabled":false,"Intensity":0.25,"Spread":1},"AnimationPlayer":{"Enabled":false,"Animation":"Cat Girl Bounce","Speed":1,"CustomId":"","End":100,"Start":0},"ColorCorrection":{"Enabled":false,"Saturation":0,"Contrast":0,"TintColor":{"B":1,"__type":"Color3","G":1,"R":1},"Brightness":0},"AutoBan":{"Enabled":false,"FirstWeapons":[],"SecondWeapons":[]},"MotionBlur":{"Enabled":false,"Intensity":10,"Sensitivity":1},"ThirdPerson":{"Enabled":false,"X":3,"ShowReplica":false,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"Z":6,"Y":2,"RayCheck":false},"Esp":{"Team":{"AmmoBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Skeleton":{"Enabled":false,"Transparency":0,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1},"BoxImage":{"Enabled":false,"Transparency":0,"Name":""},"HealthNumber":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1}},"Tracer":{"Enabled":false,"OutlineTransparency":0,"Origin":"Bottom","Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1,"Transparency":0,"OutlineThickness":1,"Target":"Feet","Outline":false,"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0}},"Chams":{"GlowColor":{"B":0,"__type":"Color3","G":0,"R":1},"InnerColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineTransparency":0.6,"Enabled":false,"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0.3921568691730499},"Kind":"Legacy","Glow":false,"InnerTransparency":0},"Enabled":false,"HealthBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"HeldWeapon":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Distance":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"FilledBox":{"Enabled":false,"Transparency":0.8,"Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Name":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Deflecting":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Box":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Style":"Full","Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"Winstreak":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}},"HeadMarker":{"Outline":false,"Transparency":0,"Filled":true,"Enabled":false,"Color":{"B":0.3137255012989044,"__type":"Color3","G":0.3137255012989044,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Shape":"Cross","OutlineTransparency":0},"Rank":{"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Enabled":false,"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"Speed":1,"Rotation":0,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0}}}}},"Settings":{"FontSize":16,"FlagFont":"Inconsolata","UseDisplayName":false,"DistanceScalingRef":50,"FlagTextSurround":"None","TextSurround":"None","FlagFontSize":12,"DistanceScaling":false,"Spacing":{"Top":1,"Right":1,"Left":1,"Bottom":1},"FlagTextCase":"UPPERCASE","OverrideRectSize":{"Enabled":false,"Height":1,"Width":1},"TextCase":"Standard","Font":"Inconsolata"},"Main":{"Enabled":true,"Mode":"Static","Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"Enemy":{"AmmoBar":{"Enabled":false,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Skeleton":{"Enabled":true,"Transparency":0,"Thickness":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"BoxImage":{"Enabled":false,"Transparency":0,"Name":""},"HealthNumber":{"Enabled":true,"Color":{"B":1,"__type":"Color3","G":1,"R":1}},"Tracer":{"Enabled":false,"OutlineTransparency":0,"Origin":"Bottom","Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"},"Thickness":1,"Transparency":0,"OutlineThickness":1,"Target":"Feet","OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Outline":false},"Chams":{"Enabled":false,"InnerColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineTransparency":0.6,"GlowColor":{"B":0,"__type":"Color3","G":0,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0.3921568691730499},"Kind":"Legacy","Glow":false,"InnerTransparency":0},"Enabled":true,"HeadMarker":{"Outline":false,"Transparency":0,"OutlineTransparency":0,"Filled":true,"Color":{"B":0.3137255012989044,"__type":"Color3","G":0.3137255012989044,"R":1},"OutlineColor":{"B":0,"__type":"Color3","G":0,"R":0},"Shape":"Cross","Enabled":false},"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"HeldWeapon":{"Enabled":true,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Distance":{"Enabled":true,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"FilledBox":{"Enabled":true,"Transparency":0.8,"Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Name":{"Enabled":true,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Deflecting":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"HealthBar":{"Enabled":true,"ColorMode":"Reactive","Animate":false,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":0,"G":1,"Time":1,"R":0}],"__type":"ColorSequence"}},"Winstreak":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Box":{"Enabled":true,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Style":"Full","Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}},"Rank":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Animation":{"Enabled":false,"Perimeter":{"Speed":1,"Color":{"Keypoints":[{"B":1,"G":1,"Time":0,"R":1},{"B":1,"G":0.7843137383460999,"Time":0.5,"R":0},{"B":1,"G":1,"Time":1,"R":1}],"__type":"ColorSequence"}},"Shimmer":{"Speed":0.65,"Color":{"B":0.1568627506494522,"__type":"Color3","G":0.1568627506494522,"R":0.1568627506494522}},"Kind":"Shimmer","PingPong":{"MainColor":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Speed":1,"BackgroundColor":{"B":0.0784313753247261,"__type":"Color3","G":0.0784313753247261,"R":0.0784313753247261},"Rotation":0}}}}},"Chams":{"Arms":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":true},"Character":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":false},"Item":{"Enabled":false,"Transparency":0,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Material":"Ghost","StripTextures":false}},"DeviceSpoof":{"Enabled":false,"SpoofType":"VR"},"PlayerSpoofer":{"OtherPlayers":{"Influencer":{"Enabled":false},"LeaderboardRank":{"Enabled":false,"Value":200},"CasualWinPercent":{"Enabled":false,"Value":0},"Avatar":{"Enabled":false,"Value":""},"RankedWinPercent":{"Enabled":false,"Value":0},"NosniyTeam":{"Enabled":false},"FavoriteMap":{"Enabled":false,"Value":""},"DisplayName":{"Enabled":false,"Value":""},"CasualWins":{"Enabled":false,"Value":0},"RankedWins":{"Enabled":false,"Value":0},"Winstreak":{"Enabled":false,"Value":0},"NametagStatus":{"Enabled":false,"Value":"Prime"},"Name":{"Enabled":false,"Value":""},"Level":{"Enabled":false,"Value":0},"RankedElo":{"Enabled":false,"Value":0},"RobloxEmployee":{"Enabled":false}},"LocalPlayer":{"LeaderboardRank":{"Enabled":false,"Value":1},"Avatar":{"Enabled":false,"Value":"20349956"},"EventCurrency":{"Enabled":false,"Value":9999},"CasualWins":{"Enabled":false,"Value":99999},"RankedWins":{"Enabled":false,"Value":9999},"Keys":{"Enabled":false,"Value":999},"Level":{"Enabled":false,"Value":999},"RankedElo":{"Enabled":false,"Value":3600},"Ping":{"Enabled":false,"Value":"Low"},"Influencer":{"Enabled":false,"Value":true},"DisplayName":{"Enabled":false,"Value":"Nosniy"},"RobloxEmployee":{"Enabled":false,"Value":true},"NosniyTeam":{"Enabled":false},"Winstreak":{"Enabled":false,"Value":999},"NametagStatus":{"Enabled":false,"Value":"Prime"},"FavoriteMap":{"Enabled":false,"Value":"Arena"},"RankedWinPercent":{"Enabled":false,"Value":100},"CasualWinPercent":{"Enabled":false,"Value":100},"Name":{"Enabled":false,"Value":"Nosniy"}}},"ViewModelHighlight":{"Arms":{"FillColor":{"B":1,"__type":"Color3","G":1,"R":1},"OutlineTransparency":0,"OutlineColor":{"B":1,"__type":"Color3","G":1,"R":1},"AlwaysOnTop":false,"FillTransparency":0.5,"Enabled":false},"Item":{"FillColor":{"B":1,"__type":"Color3","G":1,"R":1},"OutlineTransparency":0,"OutlineColor":{"B":1,"__type":"Color3","G":1,"R":1},"AlwaysOnTop":false,"FillTransparency":0.5,"Enabled":false}},"ViewModelWireframe":{"Arms":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Width":0.0025},"Item":{"Enabled":false,"Color":{"B":1,"__type":"Color3","G":1,"R":1},"Width":0.0025}},"SubspaceTripmines":{"TeamTrigger":false,"AutoTrigger":false},"UnlockAll":{"Cosmetics":[],"Enabled":false,"Rarities":[]},"AutoPickupDrops":{"Enabled":false,"Types":[]},"Aimbot":{"Enabled":false,"ActivationConditions":{"ScopedIn":false,"NotReloading":true},"TargetHitboxes":{"Standard":{"Air":{"HitboxBody":true,"HitboxHead":true},"Ground":{"HitboxBody":true,"HitboxHead":true}},"Small":{"Air":{"HitboxHeadSmall":true,"HitboxBodySmall":true},"Ground":{"HitboxHeadSmall":true,"HitboxBodySmall":true}}},"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true},"ReactionTime":0,"HitboxPoint":{"Surface":{"SizeReductionPercentage":50,"PreserveDepth":false},"Type":"Center"},"HitboxSelection":{"Random":{"Head":50},"Type":"ClosestToCrosshair"},"Fov":{"Circle":{"Visible":false,"Animated":{"Enabled":false,"Speed":90},"Stroke":{"Thickness":1,"Gradient":{"Keypoints":[{"B":0,"G":0,"Time":0,"R":1},{"B":0,"G":0,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0},"FollowTarget":{"Enabled":false,"SnapDistance":5,"Speed":20,"Damper":1},"Fill":{"Enabled":false,"Gradient":{"Keypoints":[{"B":0.9333333373069763,"G":0.9607843160629272,"Time":0,"R":1},{"B":0.7058823704719543,"G":0.7843137383460999,"Time":0.5,"R":1},{"B":0.4117647111415863,"G":0.5490196347236633,"Time":1,"R":1}],"__type":"ColorSequence"},"Transparency":0.15}},"Radius":150},"SwitchDelay":0,"Mode":{"Speed":0.1,"Type":"Linear"},"TargetConditions":{"Visible":true,"NotDeflecting":true,"NotShielded":true,"Vulnerable":true,"WithinFov":true},"TargetLock":{"Enabled":false,"BindInvisible":false,"Bind":{"__type":"EnumItem","EnumType":"KeyCode","Name":"Y"},"Mode":"ToggleLock","BindShowInList":true}},"Flickbot":{"Enabled":false,"ShotDelay":0,"Curvature":12,"Keybind":{"State":false,"Invisible":false,"Kind":"Hold","ShowInList":true},"FlickDuration":110,"Humanness":30,"Cooldown":250,"Shoot":false},"ViewModelOffset":{"Enabled":false,"X":0,"Roll":0,"Z":0,"Yaw":0,"Pitch":0,"Y":0},"SoundVisualizer":{"Enabled":false,"Source":"All","MinVolume":0,"Other":{"Color":{"B":1,"__type":"Color3","G":0.7843137383460999,"R":0},"Mode":"Origin","UseLoudnessColor":true},"Footsteps":{"Color":{"B":0.3921568691730499,"__type":"Color3","G":1,"R":0},"Mode":"Circle","UseLoudnessColor":true},"Types":{"Footsteps":true,"Other":true}},"ItemModifiers":{"NoMotion":false,"ExtendMeleeRange":{"Enabled":false,"Range":10},"FireCooldown":{"Enabled":false,"Percentage":25},"MeleeCooldown":{"Enabled":false,"Percentage":25},"DashCooldown":{"Enabled":false,"Percentage":25},"AutomaticWeapon":true,"NoSprintAnimation":false,"NoShootAnimation":false,"NoSpread":true,"NoCameraSway":false,"AlwaysBackstab":true,"GrenadeFuse":{"Enabled":false,"RemoveFuse":false,"ExplodeOn":"Impact"},"NoEquipAnimation":false,"AimSpeed":{"Enabled":false,"Percentage":300},"AimCooldown":{"Enabled":false,"Percentage":50},"NoReloadAnimation":false,"NoCameraShake":false,"InfiniteDoubleJumps":false,"Recoil":{"Enabled":false,"Percentage":75}},"Atmosphere":{"Enabled":false,"Haze":0,"Decay":{"B":0.05490000173449516,"__type":"Color3","G":0.2353000044822693,"R":0.36079999804496765},"Color":{"B":0.4235000014305115,"__type":"Color3","G":0.666700005531311,"R":0.7843000292778015},"Glare":0,"Density":0.395,"Offset":0},"Ragebot":{"UtilizeHealthLead":false,"Evasion":{"Translocate":{"Offset":-2},"Mode":"Random","Random":{"RadiusRandomFactor":0.5,"BaseRadius":2000000,"AnchorFromCharacter":false},"ProjectileBreaker":{"FallbackRadiusRandomFactor":0.5,"DepthForward":{"Min":0,"Max":4},"RepositionInterval":0.3,"DepthUp":{"Min":0,"Max":5.5},"DepthForwardFrequency":5,"FallbackBaseRadius":100,"DepthUpFrequency":5,"FallbackAnchorFromCharacter":false}},"Enabled":false,"ShootFrames":1,"PrioritizeHackers":true,"Weapons":{"Enabled":{"Primary":true,"Melee":true,"Secondary":true},"Priority":["Primary","Secondary","Melee"],"OnEmpty":"Reload"},"Stability":0.23,"Keybind":{"State":true,"Invisible":false,"Kind":"Always","ShowInList":true}},"Lighting":{"Enabled":false,"DisableGlobalShadows":false,"ClockTime":{"Enabled":false,"Value":12},"LightingStyle":{"Enabled":false,"Value":"Realistic"},"ColorShift":{"Enabled":false,"Top":{"B":1,"__type":"Color3","G":0.6274510025978088,"R":0.3921568691730499},"Bottom":{"B":0.3529411852359772,"__type":"Color3","G":0.1568627506494522,"R":0.0784313753247261}},"EnvironmentDiffuseScale":{"Enabled":false,"Value":0},"EnvironmentSpecularScale":{"Enabled":false,"Value":0},"ExposureCompensation":{"Enabled":false,"Value":0},"GeographicLatitude":{"Enabled":false,"Value":41.733},"Ambient":{"Enabled":false,"Outdoor":{"B":0.5450980067253113,"__type":"Color3","G":0.4000000059604645,"R":0.00392200006172061},"Indoor":{"B":1,"__type":"Color3","G":0.7960780262947083,"R":0.23137299716472626}},"Fog":{"Enabled":false,"Color":{"B":0.7529411911964417,"__type":"Color3","G":0.7529411911964417,"R":0.7529411911964417},"Start":0,"End":100000},"ShadowColor":{"Enabled":false,"Value":{"B":0.7200000286102295,"__type":"Color3","G":0.699999988079071,"R":0.699999988079071}},"Brightness":{"Enabled":false,"Value":2},"ShadowSoftness":{"Enabled":false,"Value":0.5},"PrioritizeLightingQuality":false},"AutoLoadout":{"Enabled":false,"PerMap":false,"MultipleLoadouts":false,"Loadouts":[]}}]=])),
 CurrentVersion = 17,
 LegacyVersion = 1,
 SavePath = "kiciarebuild/rivals/configs/",
@@ -66579,9 +66407,7 @@ local LITHIUM_LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAACZv0lEQV
 --  anti-cheat bypass (b7). Kicia's online user service (eZ) is offline.
 --==========================================================================
 local GlobalTrove = tbl17.n()
-tbl17.w().ensureStorageDirectories("kiciarebuild")
 tbl17.w().ensureStorageDirectories("kiciarebuild/rivals")
-tbl17.w().ensureStorageDirectories("kiciarebuild/rivals/configs")
 tbl17.w().ensureStorageDirectories("kiciarebuild/fonts")
 tbl17.w().ensureStorageDirectories("kiciarebuild/cache")
 for _, sub in ipairs({ "cosmetics/states", "crosshair_textures", "esp_images", "movement_recorder" }) do
