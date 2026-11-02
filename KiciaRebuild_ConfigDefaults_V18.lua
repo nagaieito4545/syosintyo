@@ -8,69 +8,138 @@ end
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 --==========================================================================
---  Rivals AC Bypass  (integrated from Rivals AC Bypass.txt)
+--  Rivals AC Bypass  (Android-compatible, integrated)
 --==========================================================================
 pcall(function()
-    local ACBypass = {}
-    ACBypass.__index = ACBypass
+    -- Android executors (DeltaX, Fluxus, Arceus X等) はAPIを
+    -- getgenv() / _G / getfenv() 経由で露出するため、
+    -- K.fn() が使えるタイミングより前にここが走る。
+    -- 全executor APIは以下のヘルパーで安全に解決する。
+    local function resolveAPI(name)
+        local v
+        pcall(function() local e = getfenv and getfenv(0); if e then v = e[name] end end)
+        if type(v) ~= "function" then
+            pcall(function() local e = getfenv and getfenv(); if e then v = e[name] end end)
+        end
+        if type(v) ~= "function" then
+            pcall(function() local e = getgenv and getgenv(); if e then v = e[name] end end)
+        end
+        if type(v) ~= "function" then
+            pcall(function() v = _G[name] end)
+        end
+        return type(v) == "function" and v or nil
+    end
 
-    local PlayersAC = cloneref(game:GetService("Players"))
-    local ReplicatedStorageAC = cloneref(game:GetService("ReplicatedStorage"))
-    local ReplicatedFirstAC = cloneref(game:GetService("ReplicatedFirst"))
-    local ScriptContextAC = cloneref(game:GetService("ScriptContext"))
-    local LocalPlayerAC = PlayersAC.LocalPlayer
+    -- executor APIs（存在しない環境ではnil、後でガードする）
+    local _cloneref         = resolveAPI("cloneref")
+    local _hookmetamethod   = resolveAPI("hookmetamethod")
+    local _hookfunction     = resolveAPI("hookfunction")
+    local _iscclosure       = resolveAPI("iscclosure")
+    local _newcclosure      = resolveAPI("newcclosure")
+    local _checkcaller      = resolveAPI("checkcaller")
+    local _getthreadidentity = resolveAPI("getthreadidentity") or resolveAPI("getidentity")
+    local _setthreadidentity = resolveAPI("setthreadidentity") or resolveAPI("setidentity")
+    local _getscripts       = resolveAPI("getscripts") or resolveAPI("getsenv")
+    local _getscriptbytecode = resolveAPI("getscriptbytecode")
 
-    local stateAC = { bypassed = false, load_state = "Unloaded" }
-    local kExpectedScripts = { [1914481512] = "Root", [1936447744] = "ReplicatedController", [3892767096] = "MiscellaneousController", [337076960] = "LocalScript3", [2191862192] = "ClientFighter" }
+    -- hookmetamethod / hookfunction どちらも必須。なければバイパス不可能なので終了。
+    if not _hookmetamethod or not _hookfunction then return end
+
+    local function safeCloneref(svc)
+        if _cloneref then
+            local ok, r = pcall(_cloneref, svc)
+            if ok and r then return r end
+        end
+        return svc
+    end
+
+    local PlayersAC          = safeCloneref(game:GetService("Players"))
+    local ReplicatedStorageAC = safeCloneref(game:GetService("ReplicatedStorage"))
+    local ReplicatedFirstAC  = safeCloneref(game:GetService("ReplicatedFirst"))
+    local LocalPlayerAC      = PlayersAC.LocalPlayer
+
+    local stateAC = { bypassed = false }
+    local kExpectedScripts = {
+        [1914481512] = "Root",
+        [1936447744] = "ReplicatedController",
+        [3892767096] = "MiscellaneousController",
+        [337076960]  = "LocalScript3",
+        [2191862192] = "ClientFighter",
+    }
 
     local function SafeHook(hookfn, ...)
-        local args = {...}
+        local args = { ... }
         local func, inst, metamethod, detour
-        if hookfn == hookmetamethod then inst, metamethod, detour = args[1], args[2], args[3] else func, detour = args[1], args[2] end
-        if hookfn == hookfunction and iscclosure(func) then detour = newcclosure(detour) end
-        if not iscclosure(detour) then detour = newcclosure(detour) end
+        if hookfn == _hookmetamethod then
+            inst, metamethod, detour = args[1], args[2], args[3]
+        else
+            func, detour = args[1], args[2]
+        end
+        -- Android: iscclosure / newcclosure が存在する場合のみ適用
+        if _iscclosure and _newcclosure then
+            if hookfn == _hookfunction and _iscclosure(func) then
+                detour = _newcclosure(detour)
+            end
+            if not _iscclosure(detour) then
+                detour = _newcclosure(detour)
+            end
+        end
         local original
         pcall(function()
-            if hookfn == hookmetamethod then original = hookfn(inst, metamethod, detour) else original = hookfn(func, detour) end
+            if hookfn == _hookmetamethod then
+                original = hookfn(inst, metamethod, detour)
+            else
+                original = hookfn(func, detour)
+            end
         end)
         return original
     end
 
     local function SafeCall(func, ...)
-        if checkcaller() then return func(...) end
-        local old = getthreadidentity()
-        if old ~= 2 then setthreadidentity(2) end
-        local r = { func(...) }
-        if old ~= 2 then setthreadidentity(old) end
-        return table.unpack(r)
+        -- checkcaller が使えない環境（一部Androidエクスプロイト）では素通し
+        if _checkcaller and _checkcaller() then return func(...) end
+        if _getthreadidentity and _setthreadidentity then
+            local old = _getthreadidentity()
+            if old ~= 2 then _setthreadidentity(2) end
+            local r = { func(...) }
+            if old ~= 2 then _setthreadidentity(old) end
+            return table.unpack(r)
+        end
+        return func(...)
     end
 
     local function VerifyScripts()
-        local getscripts_fn, getbytecode_fn = pcall(function() return getscripts or getsenv end), pcall(function() return getscriptbytecode end)
-        if not getscripts_fn or not getbytecode_fn then return true end
+        -- getscripts / getscriptbytecode が使えない環境はスキップしてtrue返却
+        if not _getscripts or not _getscriptbytecode then return true end
+        local ok_gs, scripts = pcall(_getscripts)
+        if not ok_gs or type(scripts) ~= "table" then return true end
         local found = {}
-        for _, script_instance in ipairs(getscripts_fn()) do
-            local ok, bytecode = pcall(getbytecode_fn, script_instance)
-            if ok and bytecode then
-                for expected_id, _ in pairs(kExpectedScripts) do
+        for _, script_instance in ipairs(scripts) do
+            local ok_bc, bytecode = pcall(_getscriptbytecode, script_instance)
+            if ok_bc and bytecode then
+                for expected_id in pairs(kExpectedScripts) do
                     if not found[expected_id] then
-                        local source_ok, source = pcall(debug.info, script_instance, "s")
-                        if source_ok and source and source ~= "=[C]" then found[expected_id] = true end
+                        local ok_src, source = pcall(debug.info, script_instance, "s")
+                        if ok_src and source and source ~= "=[C]" then
+                            found[expected_id] = true
+                        end
                     end
                 end
             end
         end
-        for id, _ in pairs(kExpectedScripts) do if not found[id] then return false end end
+        for id in pairs(kExpectedScripts) do
+            if not found[id] then return false end
+        end
         return true
     end
 
     local function HookKickPrevention()
-        for _, name in ipairs({"Kick", "kick"}) do
+        for _, name in ipairs({ "Kick", "kick" }) do
             local f = LocalPlayerAC[name]
             if type(f) == "function" then
                 local old
-                old = SafeHook(hookfunction, f, function(self, ...)
-                    if self == LocalPlayerAC and not checkcaller() then return end
+                old = SafeHook(_hookfunction, f, function(self, ...)
+                    if self == LocalPlayerAC and not (_checkcaller and _checkcaller()) then return end
                     return old(self, ...)
                 end)
             end
@@ -79,21 +148,34 @@ pcall(function()
 
     local function HookACScript(ac_script)
         if not ac_script then return end
-        local oldindex = SafeHook(hookmetamethod, ac_script, "__index", function(t, k)
-            if t == ac_script and not checkcaller() and k == "Enabled" and not stateAC.bypassed then return false end
-            if checkcaller() then return oldindex(t, k) end
+        local oldindex = SafeHook(_hookmetamethod, ac_script, "__index", function(t, k)
+            if t == ac_script and not (_checkcaller and _checkcaller()) and k == "Enabled" and not stateAC.bypassed then
+                return false
+            end
+            if _checkcaller and _checkcaller() then return oldindex(t, k) end
             return SafeCall(oldindex, t, k)
         end)
-        local oldnewindex = SafeHook(hookmetamethod, ac_script, "__newindex", function(t, k, v)
-            if t == ac_script and not checkcaller() and k == "Enabled" and not stateAC.bypassed then return end
-            if checkcaller() then return oldnewindex(t, k, v) end
+        local oldnewindex = SafeHook(_hookmetamethod, ac_script, "__newindex", function(t, k, v)
+            if t == ac_script and not (_checkcaller and _checkcaller()) and k == "Enabled" and not stateAC.bypassed then
+                return
+            end
+            if _checkcaller and _checkcaller() then return oldnewindex(t, k, v) end
             return SafeCall(oldnewindex, t, k, v)
         end)
     end
 
     if VerifyScripts() then
         local ac_script = ReplicatedFirstAC:WaitForChild("LocalScript3", 10)
-        local ac_event = ReplicatedStorageAC:WaitForChild("Remotes", 10):WaitForChild("RemoteEvent", 10)
+        local ac_event
+        local ok_rm, remotes = pcall(function()
+            return ReplicatedStorageAC:WaitForChild("Remotes", 10)
+        end)
+        if ok_rm and remotes then
+            local ok_re, re = pcall(function()
+                return remotes:WaitForChild("RemoteEvent", 10)
+            end)
+            if ok_re then ac_event = re end
+        end
         if ac_script and ac_event then
             HookACScript(ac_script)
             HookKickPrevention()
